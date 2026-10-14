@@ -1,0 +1,26 @@
+
+# Virtual environment
+.venv/
+
+# Secrets
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Local databases
+*.db
+*.sqlite3
+
+# Test artifacts
+.pytest_cache/
+.coverage
+
+# Editor and OS files
+.vscode/
+.DS_Store
+Thumbs.db
