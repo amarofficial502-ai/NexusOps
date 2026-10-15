@@ -1,26 +1,41 @@
-﻿
+
 from pathlib import Path
 import sqlite3
+import io
+import re
 from datetime import datetime, timezone
 
 import pandas as pd
 import streamlit as st
 import plotly.express as px
 
+from src.security import require_login, logout, has_role
 
 # =========================================================
-# 1. CONFIGURATION
+# 1. CONFIGURATION AND AUTHENTICATION
 # =========================================================
 
 st.set_page_config(
     page_title="NexusOps AI",
-    page_icon="âš™ï¸",
+    page_icon="⚙️",
     layout="wide",
 )
+
+# Do not load or display dashboard data before login.
+require_login()
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_FILE = BASE_DIR / "data" / "tasks.csv"
 DB_FILE = BASE_DIR / "data" / "nexusops.db"
+
+username = st.session_state.get("username", "Unknown")
+role = st.session_state.get("role", "Viewer")
+
+st.sidebar.caption(f"Logged in as: {username}")
+st.sidebar.caption(f"Role: {role}")
+
+if st.sidebar.button("Log out", use_container_width=True):
+    logout()
 
 st.title("NexusOps AI")
 st.subheader("Autonomous Management & Operations Intelligence")
@@ -433,18 +448,31 @@ df["recommended_action"] = df.apply(
 # 7. NAVIGATION
 # =========================================================
 
+all_pages = [
+    "Dashboard",
+    "Task Intelligence",
+    "Workload Intelligence",
+    "Data Quality",
+    "Smart Data Cleaner",
+    "Root Cause Analysis",
+    "Cost Simulator",
+    "AI Actions",
+    "Executive Reports",
+]
+
+# Only Admin and Manager can record decisions.
+# Viewers can inspect dashboard information.
+if role == "Viewer":
+    pages = [
+        page for page in all_pages
+        if page != "AI Actions"
+    ]
+else:
+    pages = all_pages
+
 page = st.sidebar.radio(
     "Navigation",
-    [
-        "Dashboard",
-        "Task Intelligence",
-        "Workload Intelligence",
-        "Data Quality",
-        "Root Cause Analysis",
-        "Cost Simulator",
-        "AI Actions",
-        "Executive Reports",
-    ],
+    pages,
 )
 
 st.sidebar.caption(
@@ -483,7 +511,7 @@ if page == "Dashboard":
                 y="tasks",
                 title="Tasks by Department",
             ),
-            width='stretch',
+            use_container_width=True,
         )
 
     with chart2:
@@ -502,7 +530,7 @@ if page == "Dashboard":
                 values="tasks",
                 title="Task Status Distribution",
             ),
-            width='stretch',
+            use_container_width=True,
         )
 
     st.subheader("Highest Priority Open Tasks")
@@ -526,10 +554,9 @@ if page == "Dashboard":
 
     st.dataframe(
         open_tasks[display_columns].head(10),
-        width='stretch',
+        use_container_width=True,
         hide_index=True,
     )
-
 
 # =========================================================
 # 9. TASK INTELLIGENCE
@@ -605,7 +632,7 @@ elif page == "Task Intelligence":
 
     st.dataframe(
         intelligence_df[columns],
-        width='stretch',
+        use_container_width=True,
         hide_index=True,
     )
 
@@ -625,11 +652,9 @@ elif page == "Workload Intelligence":
     open_df = df.loc[~completed_mask].copy()
 
     if open_df.empty:
-
         st.success("No open tasks in the current dataset.")
 
     else:
-
         workload = (
             open_df.groupby("owner", dropna=False)
             .agg(
@@ -652,14 +677,14 @@ elif page == "Workload Intelligence":
                 y="estimated_hours",
                 title="Estimated Open Workload by Owner",
             ),
-            width='stretch',
+            use_container_width=True,
         )
 
         st.subheader("Team Workload Summary")
 
         st.dataframe(
             workload,
-            width='stretch',
+            use_container_width=True,
             hide_index=True,
         )
 
@@ -691,24 +716,365 @@ elif page == "Data Quality":
     g.metric("Rows Requiring Review", quality_count)
 
     if quality_details.empty:
-
         st.success("No data quality issues detected.")
 
     else:
-
         st.warning(
             "Rows with validation issues are listed below."
         )
 
         st.dataframe(
             quality_details,
-            width='stretch',
+            use_container_width=True,
             hide_index=True,
         )
 
 
 # =========================================================
-# 12. ROOT CAUSE ANALYSIS
+# 12. SMART DATA CLEANER
+# =========================================================
+
+elif page == "Smart Data Cleaner":
+
+    st.header("Smart Data Cleaner")
+
+    st.write(
+        "Upload CSV or Excel, inspect data quality, clean a copy, "
+        "and download the result. Original file is not overwritten."
+    )
+
+    uploaded_file = st.file_uploader(
+        "Upload CSV or Excel file",
+        type=["csv", "xlsx", "xls"],
+        key="smart_cleaner_upload",
+    )
+
+    if uploaded_file is not None:
+
+        if uploaded_file.size > 50 * 1024 * 1024:
+            st.error("File exceeds 50 MB. Upload a smaller file.")
+            st.stop()
+
+        try:
+            file_bytes = uploaded_file.getvalue()
+
+            if uploaded_file.name.lower().endswith(".csv"):
+                try:
+                    original_df = pd.read_csv(
+                        io.BytesIO(file_bytes)
+                    )
+                except UnicodeDecodeError:
+                    original_df = pd.read_csv(
+                        io.BytesIO(file_bytes),
+                        encoding="latin-1",
+                    )
+            else:
+                original_df = pd.read_excel(
+                    io.BytesIO(file_bytes)
+                )
+
+        except Exception as exc:
+            st.error(f"Unable to read file: {exc}")
+            st.stop()
+
+        if len(original_df.columns) == 0:
+            st.error("The file contains no readable columns.")
+            st.stop()
+
+        st.subheader("Original Data Overview")
+
+        c1, c2, c3, c4 = st.columns(4)
+
+        c1.metric("Rows", len(original_df))
+        c2.metric("Columns", len(original_df.columns))
+        c3.metric(
+            "Missing Cells",
+            int(original_df.isna().sum().sum()),
+        )
+        c4.metric(
+            "Duplicate Rows",
+            int(original_df.duplicated().sum()),
+        )
+
+        st.dataframe(
+            original_df.head(100),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        st.subheader("Choose Cleaning Rules")
+
+        c1, c2 = st.columns(2)
+
+        with c1:
+            trim_spaces = st.checkbox(
+                "Trim spaces in text",
+                value=True,
+            )
+
+            normalize_headers = st.checkbox(
+                "Normalize column names",
+                value=True,
+            )
+
+            remove_empty_rows = st.checkbox(
+                "Remove completely empty rows",
+                value=True,
+            )
+
+            remove_empty_columns = st.checkbox(
+                "Remove completely empty columns",
+                value=True,
+            )
+
+        with c2:
+            remove_duplicates = st.checkbox(
+                "Remove duplicate rows",
+                value=True,
+            )
+
+            missing_strategy = st.selectbox(
+                "Handle missing values",
+                [
+                    "Keep missing values",
+                    "Drop rows with missing values",
+                    "Fill text with Unknown and numbers with median",
+                ],
+            )
+
+        if st.button("Clean Dataset", type="primary"):
+
+            cleaned_df = original_df.copy()
+            changes = []
+
+            if normalize_headers:
+                names = []
+                seen = {}
+
+                for column in cleaned_df.columns:
+
+                    name = re.sub(
+                        r"[^0-9a-zA-Z]+",
+                        "_",
+                        str(column).strip().lower(),
+                    ).strip("_") or "column"
+
+                    seen[name] = seen.get(name, 0) + 1
+
+                    if seen[name] > 1:
+                        name = f"{name}_{seen[name]}"
+
+                    names.append(name)
+
+                cleaned_df.columns = names
+                changes.append("Normalized column names")
+
+            if trim_spaces:
+
+                for column in cleaned_df.select_dtypes(
+                    include=["object", "string"]
+                ).columns:
+
+                    cleaned_df[column] = cleaned_df[column].map(
+                        lambda value: (
+                            value.strip()
+                            if isinstance(value, str)
+                            else value
+                        )
+                    )
+
+                changes.append("Trimmed text spaces")
+
+            if remove_empty_columns:
+
+                before = len(cleaned_df.columns)
+
+                cleaned_df = cleaned_df.dropna(
+                    axis=1,
+                    how="all",
+                )
+
+                removed = before - len(cleaned_df.columns)
+
+                if removed:
+                    changes.append(
+                        f"Removed {removed} empty columns"
+                    )
+
+            if remove_empty_rows:
+
+                before = len(cleaned_df)
+
+                cleaned_df = cleaned_df.dropna(
+                    axis=0,
+                    how="all",
+                )
+
+                removed = before - len(cleaned_df)
+
+                if removed:
+                    changes.append(
+                        f"Removed {removed} empty rows"
+                    )
+
+            if remove_duplicates:
+
+                before = len(cleaned_df)
+                cleaned_df = cleaned_df.drop_duplicates()
+                removed = before - len(cleaned_df)
+
+                if removed:
+                    changes.append(
+                        f"Removed {removed} duplicate rows"
+                    )
+
+            if missing_strategy == "Drop rows with missing values":
+
+                before = len(cleaned_df)
+                cleaned_df = cleaned_df.dropna()
+                removed = before - len(cleaned_df)
+
+                changes.append(
+                    f"Removed {removed} rows with missing values"
+                )
+
+            elif missing_strategy.startswith("Fill text"):
+
+                for column in cleaned_df.columns:
+
+                    if pd.api.types.is_numeric_dtype(
+                        cleaned_df[column]
+                    ):
+
+                        median = cleaned_df[column].median()
+
+                        if pd.notna(median):
+                            cleaned_df[column] = (
+                                cleaned_df[column].fillna(median)
+                            )
+
+                    else:
+                        cleaned_df[column] = (
+                            cleaned_df[column].fillna("Unknown")
+                        )
+
+                changes.append("Filled missing values")
+
+            st.session_state["cleaned_dataset"] = cleaned_df
+            st.session_state["cleaning_changes"] = changes
+            st.session_state["cleaning_source"] = uploaded_file.name
+
+            st.session_state["cleaning_before_shape"] = (
+                len(original_df),
+                len(original_df.columns),
+            )
+
+        if (
+            "cleaned_dataset" in st.session_state
+            and st.session_state.get("cleaning_source")
+            == uploaded_file.name
+        ):
+
+            cleaned_df = st.session_state["cleaned_dataset"]
+
+            changes = st.session_state.get(
+                "cleaning_changes",
+                [],
+            )
+
+            st.subheader("Cleaning Report")
+
+            before_rows, before_cols = st.session_state[
+                "cleaning_before_shape"
+            ]
+
+            after_rows, after_cols = cleaned_df.shape
+
+            c1, c2, c3, c4 = st.columns(4)
+
+            c1.metric(
+                "Rows",
+                f"{before_rows} → {after_rows}",
+            )
+
+            c2.metric(
+                "Columns",
+                f"{before_cols} → {after_cols}",
+            )
+
+            c3.metric(
+                "Missing Cells After",
+                int(cleaned_df.isna().sum().sum()),
+            )
+
+            c4.metric(
+                "Duplicates After",
+                int(cleaned_df.duplicated().sum()),
+            )
+
+            if changes:
+                for change in changes:
+                    st.write(f"- {change}")
+            else:
+                st.info("No changes were required.")
+
+            st.subheader("Cleaned Data Preview")
+
+            st.dataframe(
+                cleaned_df.head(100),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            csv_data = cleaned_df.to_csv(
+                index=False,
+            ).encode("utf-8-sig")
+
+            base_name = Path(uploaded_file.name).stem
+
+            st.download_button(
+                "Download Cleaned CSV",
+                data=csv_data,
+                file_name=f"{base_name}_cleaned.csv",
+                mime="text/csv",
+            )
+
+            try:
+                excel_buffer = io.BytesIO()
+
+                with pd.ExcelWriter(
+                    excel_buffer,
+                    engine="openpyxl",
+                ) as writer:
+
+                    cleaned_df.to_excel(
+                        writer,
+                        index=False,
+                        sheet_name="Cleaned Data",
+                    )
+
+                st.download_button(
+                    "Download Cleaned Excel",
+                    data=excel_buffer.getvalue(),
+                    file_name=f"{base_name}_cleaned.xlsx",
+                    mime=(
+                        "application/vnd.openxmlformats-officedocument."
+                        "spreadsheetml.sheet"
+                    ),
+                )
+
+            except ImportError:
+                st.warning(
+                    "Install openpyxl to enable Excel download."
+                )
+
+            st.caption(
+                "The original uploaded file is not overwritten. "
+                "Review cleaned data before using it."
+            )
+
+# =========================================================
+# 13. ROOT CAUSE ANALYSIS
 # =========================================================
 
 elif page == "Root Cause Analysis":
@@ -718,11 +1084,9 @@ elif page == "Root Cause Analysis":
     overdue_df = df.loc[overdue_mask].copy()
 
     if overdue_df.empty:
-
         st.success("No overdue tasks detected.")
 
     else:
-
         root_summary = (
             overdue_df.groupby("department", dropna=False)
             .size()
@@ -737,14 +1101,14 @@ elif page == "Root Cause Analysis":
                 y="overdue_tasks",
                 title="Overdue Tasks by Department",
             ),
-            width='stretch',
+            use_container_width=True,
         )
 
         st.subheader("Overdue Task Details")
 
         st.dataframe(
             overdue_df,
-            width='stretch',
+            use_container_width=True,
             hide_index=True,
         )
 
@@ -755,7 +1119,7 @@ elif page == "Root Cause Analysis":
 
 
 # =========================================================
-# 13. COST SIMULATOR
+# 14. COST SIMULATOR
 # =========================================================
 
 elif page == "Cost Simulator":
@@ -782,7 +1146,7 @@ elif page == "Cost Simulator":
     extra = max(actual - estimated, 0)
 
     hourly_rate = st.number_input(
-        "Assumed cost per hour (â‚¹)",
+        "Assumed cost per hour (₹)",
         min_value=0,
         value=500,
         step=50,
@@ -811,19 +1175,23 @@ elif page == "Cost Simulator":
 
     st.metric(
         "Hypothetical Cost Saving",
-        f"â‚¹{saved_cost:,.0f}",
+        f"₹{saved_cost:,.0f}",
     )
 
     st.caption(
         "Illustrative scenario only. Savings are not verified company results."
     )
 
-
 # =========================================================
-# 14. AI ACTIONS & HUMAN APPROVAL
+# 15. AI ACTIONS AND HUMAN APPROVAL
 # =========================================================
 
 elif page == "AI Actions":
+
+    # Enforce permission again at the action boundary.
+    if not has_role("Admin", "Manager"):
+        st.error("You do not have permission to review or record decisions.")
+        st.stop()
 
     st.header("AI Actions & Human Approval")
 
@@ -859,17 +1227,14 @@ elif page == "AI Actions":
         )
 
     if open_df.empty:
-
         st.success("No open tasks need action.")
 
     else:
-
         st.subheader("Recommended Actions")
 
         action_rows = []
 
         for _, task in open_df.iterrows():
-
             task_id = str(task["task_id"])
             recommendation = str(task["recommended_action"])
 
@@ -892,7 +1257,7 @@ elif page == "AI Actions":
 
         st.dataframe(
             pd.DataFrame(action_rows),
-            width='stretch',
+            use_container_width=True,
             hide_index=True,
         )
 
@@ -900,7 +1265,7 @@ elif page == "AI Actions":
 
         task_options = [
             (
-                f'{row["task_id"]} â€” '
+                f'{row["task_id"]} — '
                 f'{row["task_name"]} '
                 f'({row["owner"]})'
             )
@@ -940,9 +1305,11 @@ elif page == "AI Actions":
 
         with st.form("action_decision_form"):
 
+            # The identity comes from the authenticated session.
             decided_by = st.text_input(
-                "Reviewer / Manager Name",
-                placeholder="Enter reviewer name",
+                "Authenticated Reviewer",
+                value=username,
+                disabled=True,
             )
 
             decision = st.radio(
@@ -963,27 +1330,18 @@ elif page == "AI Actions":
 
             if submitted:
 
-                if not decided_by.strip():
-
-                    st.error(
-                        "Please enter the reviewer / manager name."
-                    )
-
-                elif already_recorded:
-
+                if already_recorded:
                     st.error(
                         "This task recommendation already has a saved decision."
                     )
 
                 else:
-
                     try:
-
                         save_decision(
                             selected_task,
                             recommendation,
                             decision,
-                            decided_by,
+                            username,
                             notes,
                         )
 
@@ -995,37 +1353,30 @@ elif page == "AI Actions":
                         st.rerun()
 
                     except sqlite3.IntegrityError:
-
                         st.error(
                             "A decision for this task and recommendation "
                             "already exists."
                         )
 
                     except sqlite3.Error as exc:
-
-                        st.error(
-                            f"Could not save decision: {exc}"
-                        )
+                        st.error(f"Could not save decision: {exc}")
 
     st.divider()
     st.subheader("Decision History / Audit Trail")
 
     try:
-
         history = get_decisions()
 
         if history.empty:
-
             st.caption(
                 "No decisions recorded yet. "
                 "Submit an approval or rejection above."
             )
 
         else:
-
             st.dataframe(
                 history,
-                width='stretch',
+                use_container_width=True,
                 hide_index=True,
             )
 
@@ -1041,14 +1392,12 @@ elif page == "AI Actions":
             )
 
     except sqlite3.Error as exc:
-
         st.error(
             f"Unable to read decision history: {exc}"
         )
 
-
 # =========================================================
-# 15. EXECUTIVE REPORTS
+# 16. EXECUTIVE REPORTS
 # =========================================================
 
 elif page == "Executive Reports":
@@ -1056,16 +1405,13 @@ elif page == "Executive Reports":
     st.header("Executive Reports")
 
     try:
-
         decision_history = get_decisions()
 
         if decision_history.empty:
-
             approved_count = 0
             rejected_count = 0
 
         else:
-
             approved_count = int(
                 decision_history["decision"]
                 .eq("Approved")
@@ -1079,12 +1425,11 @@ elif page == "Executive Reports":
             )
 
     except sqlite3.Error:
-
         approved_count = 0
         rejected_count = 0
 
     report = (
-        "NexusOps AI â€” Operations Summary\n"
+        "NexusOps AI — Operations Summary\n"
         f"Reporting date: {today.date()}\n"
         f"Total tasks: {len(df)}\n"
         f"Overdue tasks: {int(overdue_mask.sum())}\n"
@@ -1109,4 +1454,3 @@ elif page == "Executive Reports":
         file_name="nexusops_executive_summary.txt",
         mime="text/plain",
     )
-

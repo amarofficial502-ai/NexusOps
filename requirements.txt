@@ -1,8 +1,12 @@
-
 streamlit
 pandas
 numpy
 plotly
 python-dotenv
-
+bcrypt
+pyotp
+qrcode[pil]
 pytest
+cryptography
+openpyxl
+xlrd
