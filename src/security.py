@@ -34,8 +34,16 @@ ALLOWED_ROLES = {"Admin", "Manager", "Viewer"}
 # =========================================================
 
 def _fernet():
-    """Create an encryption instance from the environment key."""
+    """Read encryption key from environment or Streamlit Cloud Secrets."""
     raw_key = os.environ.get("NEXUSOPS_ENCRYPTION_KEY", "")
+
+    if not raw_key:
+        try:
+            raw_key = str(
+                st.secrets.get("NEXUSOPS_ENCRYPTION_KEY", "")
+            )
+        except Exception:
+            raw_key = ""
 
     if len(raw_key) < 32:
         raise RuntimeError(
@@ -65,7 +73,7 @@ def _connect():
 
 
 def initialize_security_db():
-    """Create security tables and add compatible missing columns."""
+    """Create security tables and compatible missing columns."""
     with _connect() as connection:
         connection.execute("""
             CREATE TABLE IF NOT EXISTS users (
@@ -81,7 +89,6 @@ def initialize_security_db():
             )
         """)
 
-        # Preserve compatibility with existing audit table schemas.
         connection.execute("""
             CREATE TABLE IF NOT EXISTS security_audit (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -124,7 +131,7 @@ def initialize_security_db():
 # =========================================================
 
 def _audit(username, event):
-    """Write an audit event using the existing table's timestamp column."""
+    """Write a security audit event."""
     initialize_security_db()
 
     with _connect() as connection:
@@ -135,7 +142,6 @@ def _audit(username, event):
             ).fetchall()
         }
 
-        # Older databases may use created_at; newer ones may use occurred_at.
         if "occurred_at" in columns:
             timestamp_column = "occurred_at"
         elif "created_at" in columns:
@@ -145,7 +151,6 @@ def _audit(username, event):
                 "security_audit has no recognized timestamp column."
             )
 
-        # The column name is selected only from these fixed values.
         connection.execute(
             f"""
             INSERT INTO security_audit
@@ -311,7 +316,7 @@ def activate_user_after_mfa(username, secret, code):
 # =========================================================
 
 def _record_login_failure(username, event):
-    """Count failed logins and lock an account at the configured limit."""
+    """Count failed logins and lock an account when required."""
     now = time.time()
     initialize_security_db()
 
@@ -375,7 +380,6 @@ def authenticate(username, password, otp):
         _audit(username, "login_locked")
         return False
 
-    # Perform a bcrypt check for unknown users as well.
     dummy_hash = bcrypt.hashpw(
         b"dummy-password-for-timing",
         bcrypt.gensalt(rounds=12),
@@ -387,8 +391,8 @@ def authenticate(username, password, otp):
         else b""
     )
 
-    # Reject overlong passwords rather than silently truncating them.
     password_ok = False
+
     if len(password_bytes) <= 72:
         stored_hash = (
             bytes(user["password_hash"])
