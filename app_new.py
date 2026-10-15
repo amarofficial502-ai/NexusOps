@@ -9,7 +9,17 @@ import pandas as pd
 import streamlit as st
 import plotly.express as px
 
-from src.security import require_login, logout, has_role
+import hmac
+import qrcode
+from src.security import (
+    require_login,
+    logout,
+    has_role,
+    create_user,
+    activate_user_after_mfa,
+    initialize_security_db,
+    DB_PATH,
+)
 
 # =========================================================
 # 1. CONFIGURATION AND AUTHENTICATION
@@ -20,6 +30,117 @@ st.set_page_config(
     page_icon="⚙️",
     layout="wide",
 )
+
+
+# One-time, token-protected first Admin setup for Streamlit Cloud.
+def cloud_admin_bootstrap():
+    initialize_security_db()
+
+    with sqlite3.connect(DB_PATH, timeout=10) as connection:
+        total_users = connection.execute(
+            "SELECT COUNT(*) FROM users"
+        ).fetchone()[0]
+
+    pending_user = st.session_state.get("bootstrap_pending_username")
+    pending_secret = st.session_state.get("bootstrap_pending_secret")
+
+    # Never allow bootstrap after an account exists, except to finish
+    # MFA for the pending account created in this same session.
+    if total_users > 0 and not pending_user:
+        return False
+
+    st.title("NexusOps ? First Admin Setup")
+    st.warning(
+        "Create the first administrator and activate authenticator MFA. "
+        "Keep your setup token and authenticator secret private."
+    )
+
+    if not pending_user:
+        try:
+            expected_token = str(st.secrets.get("NEXUSOPS_BOOTSTRAP_TOKEN", ""))
+        except Exception:
+            expected_token = ""
+
+        if len(expected_token) < 32:
+            st.error(
+                "Admin setup is not configured. Add "
+                "NEXUSOPS_BOOTSTRAP_TOKEN in Streamlit Cloud Secrets."
+            )
+            st.stop()
+
+        with st.form("cloud_first_admin_form"):
+            token = st.text_input("Bootstrap token", type="password")
+            username = st.text_input("Admin username").strip().lower()
+            password = st.text_input("New admin password", type="password")
+            confirm = st.text_input("Confirm password", type="password")
+            create_clicked = st.form_submit_button("Create pending Admin")
+
+        if create_clicked:
+            if not hmac.compare_digest(token, expected_token):
+                st.error("Invalid setup token.")
+                st.stop()
+
+            if not username or len(username) > 80:
+                st.error("Username must contain 1?80 characters.")
+                st.stop()
+
+            if password != confirm:
+                st.error("Passwords do not match.")
+                st.stop()
+
+            try:
+                secret = create_user(username, password, role="Admin")
+            except Exception as exc:
+                st.error(f"Admin creation failed: {type(exc).__name__}")
+                st.stop()
+
+            st.session_state["bootstrap_pending_username"] = username
+            st.session_state["bootstrap_pending_secret"] = secret
+            st.rerun()
+
+        st.stop()
+
+    # Pending account: show the authenticator QR and require a valid TOTP.
+    username = st.session_state["bootstrap_pending_username"]
+    secret = st.session_state["bootstrap_pending_secret"]
+
+    st.subheader(f"Authenticator setup for {username}")
+    uri = pyotp.TOTP(secret).provisioning_uri(
+        name=username,
+        issuer_name="NexusOps",
+    )
+
+    import io
+    qr_buffer = io.BytesIO()
+    qrcode.make(uri).save(qr_buffer, format="PNG")
+    st.image(qr_buffer.getvalue(), caption="Scan with your authenticator app")
+    st.code(secret)
+    st.caption(
+        "If scanning fails, enter the secret manually in your authenticator app."
+    )
+
+    with st.form("cloud_first_admin_mfa_form"):
+        otp = st.text_input("Current 6-digit authenticator code", max_chars=6)
+        activate_clicked = st.form_submit_button("Verify MFA and activate Admin")
+
+    if activate_clicked:
+        if activate_user_after_mfa(username, secret, otp):
+            st.session_state.pop("bootstrap_pending_username", None)
+            st.session_state.pop("bootstrap_pending_secret", None)
+            st.success("Admin activated. Sign in using your username, password and authenticator code.")
+            st.rerun()
+        else:
+            st.error("MFA verification failed. Check the authenticator code and try again.")
+
+    st.stop()
+
+
+# pyotp is used to generate the standard authenticator provisioning URI.
+import pyotp
+
+if cloud_admin_bootstrap():
+    st.stop()
+
 
 # Do not load or display dashboard data before login.
 require_login()
